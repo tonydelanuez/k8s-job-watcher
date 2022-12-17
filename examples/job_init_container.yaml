@@ -1,0 +1,17 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pi
+spec:
+  template:
+    spec:
+      initContainers:
+      - name: bootstrap
+        image: chentex/random-logger
+        args: ["10", "40", "60"]
+      containers:
+      - name: step
+        image: chentex/random-logger
+        args: ["100", "400", "100"]
+      restartPolicy: Never
+  backoffLimit: 4
