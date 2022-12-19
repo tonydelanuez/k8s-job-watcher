@@ -112,14 +112,14 @@ class JobWatcher:
         """Helper to fetch the initContainer spec(s) from a V1Job"""
         return self.job.spec.template.spec.init_containers
 
-    def tail_container_logs(
+    def print_container_logs(
         self,
         container="step",
         is_init_container=False,
         wait_secs=10,
         timeout_secs=30,
     ):
-        """Tails the logs of the step container and print thems to stdout
+        """Prints the logs of the container to stdout, following new logs
         If timeout is exceeded, raises ContainerLogTimeout"""
         timeout = time.time() + timeout_secs
 
@@ -157,12 +157,12 @@ class JobWatcher:
             print("printing init container logs")
             for ic in self.init_containers:
                 print(f"---- initContainer: {ic.name}")
-                self.tail_container_logs(container=ic.name, is_init_container=True)
+                self.print_container_logs(container=ic.name, is_init_container=True)
 
         if self.containers:
             # Only print logs for selected containers
             for c in filter(lambda c: c.name in watched_containers, self.containers):
-                self.tail_container_logs(container=c.name)
+                self.print_container_logs(container=c.name)
 
     def generate_job_report(self):
         # Job Name
