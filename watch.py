@@ -40,23 +40,6 @@ class PodUnavailable(JobError):
     pass
 
 
-def generate_job_report():
-    # Job Name
-    # Completions: x
-    # Start Time:
-    # Completed At:
-    # Duration:
-    # Pod Statuses:
-    # initContainers:
-    #  - Name
-    #  - Status
-    # Containers:
-    #  - Name
-    #  - Status
-    # Job Events
-    pass
-
-
 class JobWatcher:
     def __init__(
         self,
@@ -137,7 +120,7 @@ class JobWatcher:
         timeout_secs=30,
     ):
         """Tails the logs of the step container and print thems to stdout
-        If timeout is exceeded, raised ContainerLogTimeout"""
+        If timeout is exceeded, raises ContainerLogTimeout"""
         timeout = time.time() + timeout_secs
 
         # Need to check either container_statuses or init_container_statuses depending on container type
@@ -168,6 +151,34 @@ class JobWatcher:
             since_seconds=1000000,
         ):
             print(e)
+
+    def watch(self, watched_containers=[], log_init_containers=None):
+        if self.init_containers and log_init_containers:
+            print("printing init container logs")
+            for ic in self.init_containers:
+                print(f"---- initContainer: {ic.name}")
+                self.tail_container_logs(container=ic.name, is_init_container=True)
+
+        if self.containers:
+            # Only print logs for selected containers
+            for c in filter(lambda c: c.name in watched_containers, self.containers):
+                self.tail_container_logs(container=c.name)
+
+    def generate_job_report(self):
+        # Job Name
+        # Completions: x
+        # Start Time:
+        # Completed At:
+        # Duration:
+        # Pod Statuses:
+        # initContainers:
+        #  - Name
+        #  - Status
+        # Containers:
+        #  - Name
+        #  - Status
+        # Job Events
+        pass
 
 
 def check_pod_running(pod):
@@ -225,22 +236,7 @@ def main():
     init_logs = parsed_args.init_logs
 
     watcher = JobWatcher(namespace, job_name)
-    # Wait for the job to be active before fetching container logs
-    job = watcher.job
-    # Some Jobs have initContainers, log them too.
-    job_init_containers = watcher.init_containers
-    job_containers = watcher.containers
-
-    if job_init_containers and init_logs:
-        print("printing init container logs")
-        for ic in job_init_containers:
-            print(f"---- initContainer: {ic.name}")
-            watcher.tail_container_logs(container=ic.name, is_init_container=True)
-
-    if containers:
-        # Only print logs for selected containers
-        for c in filter(lambda c: c.name in containers, job_containers):
-            watcher.tail_container_logs(container=c.name)
+    watcher.watch(watched_containers=containers, log_init_containers=init_logs)
 
     # Check Job exited properly
 
