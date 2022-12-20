@@ -63,7 +63,7 @@ class JobWatcher:
         return self._fetch_job()
 
     def _fetch_job(self):
-        self.job_object = self.wait_for_active_job()
+        self.job_object = batch_client.read_namespaced_job(self.name, self.namespace)
         return self.job_object
 
     def wait_for_active_job(self) -> "client.models.v1_job.V1Job":
@@ -72,7 +72,7 @@ class JobWatcher:
         """
         timeout = time.time() + self.job_active_wait_timeout
 
-        job = batch_client.read_namespaced_job(self.name, self.namespace)
+        job = self._fetch_job()
 
         if job.status.failed or job.status.succeeded:
             raise NoActiveJob("This job has already run!")
@@ -132,7 +132,9 @@ class JobWatcher:
 
         container_status = fetch_container_status(pod, container, status_field)
 
-        while not container_status.ready:
+        while (
+            not container_status.state.running and not container_status.state.terminated
+        ):
             if time.time() > timeout:
                 raise ContainerLogTimeout()
 
@@ -162,9 +164,15 @@ class JobWatcher:
         if self.containers:
             # Only print logs for selected containers
             for c in filter(lambda c: c.name in watched_containers, self.containers):
+                print(f"------ container logs for container {c.name} ------")
                 self.print_container_logs(container=c.name)
 
     def generate_job_report(self):
+        job = batch_client.read_namespaced_job(self.name, self.namespace)
+        start_time = job.status.start_time
+        completion_time = job.status.completion_time
+
+        conditions = job.status.conditions
         # Job Name
         # Completions: x
         # Start Time:
@@ -178,6 +186,9 @@ class JobWatcher:
         #  - Name
         #  - Status
         # Job Events
+        completions = self.job.spec.completions
+        status = self.job.status
+
         pass
 
 
@@ -190,7 +201,8 @@ def check_pod_running(pod):
         )
 
     # TODO: Do we care if the pod has already succeeded?
-    if pod.status.phase != "Running":
+    # Should probably wait if the pod is pending.
+    if pod.status.phase in ["Unknown", "Pending"]:
         raise PodUnavailable(f"Pod is not running. Pod phase: {pod.status.phase}")
 
 
@@ -243,6 +255,7 @@ def main():
     # If job did not exit properly, surface message about job failure: scheduling, container failures, etc.
     # generate job report
     # exit nonzero if Job does not complete successfully
+    watcher.generate_job_report()
 
 
 if __name__ == "__main__":
