@@ -1,4 +1,6 @@
 import argparse
+import pprint
+import sys
 import time
 from typing import List, Optional
 
@@ -9,6 +11,8 @@ config.load_kube_config()
 # Create the Kubernetes client
 batch_client = client.BatchV1Api()
 core_client = client.CoreV1Api()
+events_client = client.EventsV1Api()
+
 w = watch.Watch()
 
 
@@ -123,25 +127,22 @@ class JobWatcher:
         If timeout is exceeded, raises ContainerLogTimeout"""
         timeout = time.time() + timeout_secs
 
-        # Need to check either container_statuses or init_container_statuses depending on container type
-        status_field = (
-            "init_container_statuses" if is_init_container else "container_statuses"
-        )
         pod = self.pods[0]
         check_pod_running(pod)
 
-        container_status = fetch_container_status(pod, container, status_field)
+        container_status = fetch_container_status(
+            pod, container, is_init_container=is_init_container
+        )
 
-        while (
-            not container_status.state.running and not container_status.state.terminated
-        ):
+        while not (container_status.state.running or container_status.state.terminated):
             if time.time() > timeout:
                 raise ContainerLogTimeout()
 
-            print("waiting for container to start running")
+            print("Waiting on container to be in running or terminated state")
             time.sleep(wait_secs)
-            print("refreshing container status")
-            container_status = fetch_container_status(pod, container, status_field)
+            container_status = fetch_container_status(
+                pod, container, is_init_container=is_init_container
+            )
 
         # Create the log stream for the pod
         # should probably use since=(time since container was started or infinity)
@@ -155,41 +156,49 @@ class JobWatcher:
             print(e)
 
     def watch(self, watched_containers=[], log_init_containers=None):
+        exit_statuses = {"init_containers": {}, "containers": {}}
         if self.init_containers and log_init_containers:
             print("printing init container logs")
             for ic in self.init_containers:
                 print(f"---- initContainer: {ic.name}")
                 self.print_container_logs(container=ic.name, is_init_container=True)
+                exit_statuses["init_containers"][ic.name] = fetch_container_status(
+                    self.pods[0], ic.name, is_init_container=True
+                )
 
         if self.containers:
             # Only print logs for selected containers
             for c in filter(lambda c: c.name in watched_containers, self.containers):
                 print(f"------ container logs for container {c.name} ------")
                 self.print_container_logs(container=c.name)
+                exit_statuses["containers"][c.name] = fetch_container_status(
+                    self.pods[0], c.name, is_init_container=False
+                )
 
-    def generate_job_report(self):
-        job = batch_client.read_namespaced_job(self.name, self.namespace)
-        start_time = job.status.start_time
-        completion_time = job.status.completion_time
+        print('------ Container Statuses -----')
+        # Print last known container states
+        pprint.pprint(exit_statuses)
 
-        conditions = job.status.conditions
-        # Job Name
-        # Completions: x
-        # Start Time:
-        # Completed At:
-        # Duration:
-        # Pod Statuses:
-        # initContainers:
-        #  - Name
-        #  - Status
-        # Containers:
-        #  - Name
-        #  - Status
-        # Job Events
-        completions = self.job.spec.completions
-        status = self.job.status
+        exit_codes = {
+            'init_containers': {
+                init_container: status.state.terminated.exit_code for (init_container, status) in exit_statuses["init_containers"].items()
+            },
+            'containers': {
+                container: status.state.terminated.exit_code for (container, status) in exit_statuses["containers"].items()
+            }
+        }
+        print('------ Container Exit Codes-----')
+        pprint.pprint(exit_codes)
 
-        pass
+        if watched_containers:
+            non_zero = [ret_code for (container_name, ret_code) in exit_codes['containers'].items() if ret_code != 0 and container_name in watched_containers]
+            if non_zero:
+                return non_zero.pop(0)
+        else:
+            non_zero = [ret_code for (_, ret_code) in exit_codes['containers'].items() if ret_code != 0]
+            if non_zero:
+                return non_zero.pop(0)
+        return 0
 
 
 def check_pod_running(pod):
@@ -206,8 +215,12 @@ def check_pod_running(pod):
         raise PodUnavailable(f"Pod is not running. Pod phase: {pod.status.phase}")
 
 
-def fetch_container_status(pod, container_name, status_field):
+def fetch_container_status(pod, container_name, is_init_container=False):
     """Helper to fetch the container status attribute for a given container name within a Pod"""
+    # Need to check either container_statuses or init_container_statuses depending on container type
+    status_field = (
+        "init_container_statuses" if is_init_container else "container_statuses"
+    )
     if not pod.status:
         raise PodUnavailable()
 
@@ -248,14 +261,9 @@ def main():
     init_logs = parsed_args.init_logs
 
     watcher = JobWatcher(namespace, job_name)
-    watcher.watch(watched_containers=containers, log_init_containers=init_logs)
+    return_code = watcher.watch(watched_containers=containers, log_init_containers=init_logs)
+    sys.exit(return_code)
 
-    # Check Job exited properly
-
-    # If job did not exit properly, surface message about job failure: scheduling, container failures, etc.
-    # generate job report
-    # exit nonzero if Job does not complete successfully
-    watcher.generate_job_report()
 
 
 if __name__ == "__main__":
